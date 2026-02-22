@@ -2,9 +2,9 @@ use super::{
     responders::logs::LogsResponse,
     schema::{
         AvailableLogs, AvailableLogsParams, Channel, ChannelIdType, ChannelLogsByDatePath,
-        ChannelLogsStats, ChannelParam, ChannelsList, LogsParams, LogsPathChannel, SearchParams,
-        UserIdType, UserLogPathParams, UserLogsDatePath, UserLogsPath, UserLogsStats,
-        UserNameHistoryParam, UserParam,
+        ChannelLogsByMonthPath, ChannelLogsStats, ChannelParam, ChannelsList, LogsParams,
+        LogsPathChannel, SearchParams, UserIdType, UserLogPathParams, UserLogsDatePath,
+        UserLogsPath, UserLogsStats, UserNameHistoryParam, UserParam,
     },
 };
 use crate::{
@@ -155,6 +155,34 @@ pub async fn get_channel_logs_by_date(
         .and_utc();
     let to = from
         .checked_add_days(Days::new(1))
+        .ok_or_else(|| Error::InvalidParam("Date out of range".to_owned()))?;
+
+    get_channel_logs_inner(&app, &channel_id, logs_params, (from, to)).await
+}
+
+pub async fn get_channel_logs_by_month(
+    app: State<App>,
+    Path(channel_log_params): Path<ChannelLogsByMonthPath>,
+    Query(logs_params): Query<LogsParams>,
+) -> Result<impl IntoApiResponse> {
+    debug!("Params: {logs_params:?}");
+
+    let channel_id = match channel_log_params.channel_info.channel_id_type {
+        ChannelIdType::Name => {
+            app.get_user_id_by_name(&channel_log_params.channel_info.channel)
+                .await?
+        }
+        ChannelIdType::Id => channel_log_params.channel_info.channel.clone(),
+    };
+
+    let UserLogsDatePath { year, month } = channel_log_params.date;
+
+    let from = NaiveDate::from_ymd_opt(year.parse()?, month.parse()?, 1)
+        .ok_or_else(|| Error::InvalidParam("Invalid date".to_owned()))?
+        .and_time(NaiveTime::default())
+        .and_utc();
+    let to = from
+        .checked_add_months(Months::new(1))
         .ok_or_else(|| Error::InvalidParam("Date out of range".to_owned()))?;
 
     get_channel_logs_inner(&app, &channel_id, logs_params, (from, to)).await

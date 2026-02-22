@@ -52,6 +52,14 @@ pub struct ChannelLogsByDatePath {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ChannelLogsByMonthPath {
+    #[serde(flatten)]
+    pub channel_info: LogsPathChannel,
+    #[serde(flatten)]
+    pub date: UserLogsDatePath,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct LogsPathDate {
     pub year: String,
     pub month: String,

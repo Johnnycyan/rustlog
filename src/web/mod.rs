@@ -138,7 +138,7 @@ pub async fn run(app: App, mut shutdown_rx: ShutdownRx, bot_tx: Sender<BotMessag
             }),
         )
         .api_route(
-            "/global/{user_id_type}/{user}/all",
+            "/global/users/{user_id_type}/{user}/all",
             get_with(handlers::get_user_logs_all, |op| {
                 op.description("Get all user logs across all channels")
             }),
@@ -156,13 +156,19 @@ pub async fn run(app: App, mut shutdown_rx: ShutdownRx, bot_tx: Sender<BotMessag
             }),
         )
         .api_route(
+            "/global/channels/{channel_id_type}/{channel}/{year}/{month}",
+            get_with(handlers::get_channel_logs_by_month, |op| {
+                op.description("Get channel logs from the given month")
+            }),
+        )
+        .api_route(
             "/{channel_id_type}/{channel}/{user_id_type}/{user}/{year}/{month}",
             get_with(handlers::get_user_logs_by_date, |op| {
                 op.description("Get user logs in a channel from the given month")
             }),
         )
         .api_route(
-            "/global/{user_id_type}/{user}/{year}/{month}",
+            "/global/users/{user_id_type}/{user}/{year}/{month}",
             get_with(handlers::get_user_logs_by_date_all_channels, |op| {
                 op.description("Get user logs across all channels from the given month")
             }),
