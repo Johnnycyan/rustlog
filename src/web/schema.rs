@@ -138,7 +138,7 @@ impl Display for AvailableLogDate {
 #[derive(Deserialize, JsonSchema)]
 pub struct AvailableLogsParams {
     #[serde(flatten)]
-    pub channel: ChannelParam,
+    pub channel: Option<ChannelParam>,
     #[serde(flatten)]
     pub user: Option<UserParam>,
 }
@@ -161,6 +161,12 @@ pub enum ChannelParam {
 pub struct UserLogPathParams {
     pub channel_id_type: ChannelIdType,
     pub channel: String,
+    pub user_id_type: UserIdType,
+    pub user: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct UserLogsPath {
     pub user_id_type: UserIdType,
     pub user: String,
 }

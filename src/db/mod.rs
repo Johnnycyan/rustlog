@@ -185,6 +185,162 @@ pub async fn read_available_user_logs(
     Ok(dates)
 }
 
+pub async fn read_available_user_logs_all_channels(
+    db: &Client,
+    user_id: &str,
+) -> Result<Vec<AvailableLogDate>> {
+    let timestamps: Vec<i32> = db
+        .query("SELECT toDateTime(toStartOfMonth(timestamp, 'UTC'), 'UTC') AS date FROM message_structured WHERE user_id = ? GROUP BY date ORDER BY date DESC")
+        .bind(user_id)
+        .fetch_all().await?;
+
+    let dates = timestamps
+        .into_iter()
+        .map(|timestamp| {
+            let naive = DateTime::from_timestamp(timestamp.into(), 0).expect("Invalid DateTime");
+
+            AvailableLogDate {
+                year: naive.year().to_string(),
+                month: naive.month().to_string(),
+                day: None,
+            }
+        })
+        .collect();
+
+    Ok(dates)
+}
+
+pub async fn get_channel_log_range(
+    db: &Client,
+    channel_id: &str,
+) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>> {
+    #[derive(Deserialize, Row)]
+    struct RangeRow {
+        min_ts: i64,
+        max_ts: i64,
+    }
+
+    let result = db
+        .query(
+            "SELECT toUnixTimestamp(min(timestamp)) * 1000 as min_ts, toUnixTimestamp(max(timestamp)) * 1000 as max_ts FROM message_structured WHERE channel_id = ?",
+        )
+        .bind(channel_id)
+        .fetch_optional::<RangeRow>()
+        .await?;
+
+    if let Some(row) = result {
+        if row.min_ts > 0 && row.max_ts > 0 {
+            let min_dt = DateTime::from_timestamp_millis(row.min_ts).unwrap();
+            let max_dt = DateTime::from_timestamp_millis(row.max_ts).unwrap();
+            return Ok(Some((min_dt, max_dt)));
+        }
+    }
+
+    Ok(None)
+}
+
+pub async fn get_user_log_range(
+    db: &Client,
+    user_id: &str,
+) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>> {
+    #[derive(Deserialize, Row)]
+    struct RangeRow {
+        min_ts: i64,
+        max_ts: i64,
+    }
+
+    let result = db
+        .query(
+            "SELECT toUnixTimestamp(min(timestamp)) * 1000 as min_ts, toUnixTimestamp(max(timestamp)) * 1000 as max_ts FROM message_structured WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional::<RangeRow>()
+        .await?;
+
+    if let Some(row) = result {
+        if row.min_ts > 0 && row.max_ts > 0 {
+            let min_dt = DateTime::from_timestamp_millis(row.min_ts).unwrap();
+            let max_dt = DateTime::from_timestamp_millis(row.max_ts).unwrap();
+            return Ok(Some((min_dt, max_dt)));
+        }
+    }
+
+    Ok(None)
+}
+
+pub async fn read_user_all_channels(
+    db: &Client,
+    user_id: &str,
+    params: LogsParams,
+    flush_buffer: &FlushBuffer,
+    (from, to): (DateTime<Utc>, DateTime<Utc>),
+) -> Result<LogsStream> {
+    let buffer_response =
+        FlushBufferResponse::new(flush_buffer, "", Some(user_id), params, (from, to)).await;
+
+    let suffix = if params.reverse { "DESC" } else { "ASC" };
+    let mut query = format!("SELECT * FROM message_structured WHERE user_id = ? AND timestamp >= ? AND timestamp < ? ORDER BY timestamp {suffix}");
+
+    if to - from > Duration::days(CHANNEL_MULTI_QUERY_SIZE_DAYS) {
+        let count = db
+            .query("SELECT count() FROM (SELECT timestamp FROM message_structured WHERE user_id = ? AND timestamp >= ? AND timestamp < ? LIMIT 1)")
+            .bind(user_id)
+            .bind(from.timestamp_millis() as f64 / 1000.0)
+            .bind(to.timestamp_millis() as f64 / 1000.0)
+            .fetch_one::<i32>().await?;
+        if count == 0 {
+            return Err(Error::NotFound);
+        }
+
+        let mut streams = Vec::with_capacity(1);
+        let interval = Duration::days(CHANNEL_MULTI_QUERY_SIZE_DAYS);
+        let mut current_from = from;
+        let mut current_to = current_from + interval;
+
+        loop {
+            let cursor = db
+                .query(&query)
+                .bind(user_id)
+                .bind(current_from.timestamp_millis() as f64 / 1000.0)
+                .bind(current_to.timestamp_millis() as f64 / 1000.0)
+                .fetch()?;
+            streams.push(cursor);
+
+            current_from += interval;
+            current_to += interval;
+
+            if current_to > to {
+                let cursor = db
+                    .query(&query)
+                    .bind(user_id)
+                    .bind(current_from.timestamp_millis() as f64 / 1000.0)
+                    .bind(to.timestamp_millis() as f64 / 1000.0)
+                    .fetch()?;
+                streams.push(cursor);
+                break;
+            }
+        }
+
+        if params.reverse {
+            streams.reverse();
+        }
+
+        debug!("Using {} queries for multi-query stream", streams.len());
+
+        LogsStream::new_multi_query(streams, buffer_response)
+    } else {
+        apply_limit_offset(&mut query, &buffer_response);
+
+        let cursor = db
+            .query(&query)
+            .bind(user_id)
+            .bind(from.timestamp_millis() as f64 / 1000.0)
+            .bind(to.timestamp_millis() as f64 / 1000.0)
+            .fetch()?;
+        LogsStream::new_cursor(cursor, buffer_response).await
+    }
+}
+
 pub async fn read_random_user_line(
     db: &Client,
     channel_id: &str,
@@ -290,6 +446,23 @@ pub async fn search_user_logs(
         .bind(user_id)
         .bind(search)
         .fetch()?;
+
+    LogsStream::new_cursor(cursor, buffer_response).await
+}
+
+pub async fn search_global_logs(
+    db: &Client,
+    search: &str,
+    params: LogsParams,
+) -> Result<LogsStream> {
+    let buffer_response = FlushBufferResponse::empty(params);
+
+    let suffix = if params.reverse { "DESC" } else { "ASC" };
+
+    let mut query = format!("SELECT * FROM message_structured WHERE positionCaseInsensitive(text, ?) != 0 ORDER BY timestamp {suffix}");
+    apply_limit_offset(&mut query, &buffer_response);
+
+    let cursor = db.query(&query).bind(search).fetch()?;
 
     LogsStream::new_cursor(cursor, buffer_response).await
 }

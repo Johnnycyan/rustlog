@@ -3,15 +3,16 @@ use super::{
     schema::{
         AvailableLogs, AvailableLogsParams, Channel, ChannelIdType, ChannelLogsByDatePath,
         ChannelLogsStats, ChannelParam, ChannelsList, LogsParams, LogsPathChannel, SearchParams,
-        UserIdType, UserLogPathParams, UserLogsDatePath, UserLogsStats, UserNameHistoryParam,
-        UserParam,
+        UserIdType, UserLogPathParams, UserLogsDatePath, UserLogsPath, UserLogsStats,
+        UserNameHistoryParam, UserParam,
     },
 };
 use crate::{
     app::App,
     db::{
-        self, read_available_channel_logs, read_available_user_logs, read_channel,
-        read_random_channel_line, read_random_user_line, read_user,
+        self, get_channel_log_range, get_user_log_range, read_available_channel_logs,
+        read_available_user_logs, read_channel, read_random_channel_line, read_random_user_line,
+        read_user, read_user_all_channels, search_global_logs,
     },
     error::Error,
     logs::{schema::LogRangeParams, stream::LogsStream},
@@ -183,6 +184,28 @@ async fn get_channel_logs_inner(
     Ok((cache, logs))
 }
 
+pub async fn get_channel_logs_all(
+    Path(LogsPathChannel {
+        channel_id_type,
+        channel,
+    }): Path<LogsPathChannel>,
+    Query(logs_params): Query<LogsParams>,
+    app: State<App>,
+) -> Result<Response> {
+    let channel_id = match channel_id_type {
+        ChannelIdType::Name => app.get_user_id_by_name(&channel).await?,
+        ChannelIdType::Id => channel.clone(),
+    };
+
+    app.check_opted_out(&channel_id, None)?;
+
+    let range = get_channel_log_range(&app.db, &channel_id).await?;
+    let range = range.ok_or(Error::NotFound)?;
+
+    let logs = get_channel_logs_inner(&app, &channel_id, logs_params, range).await?;
+    Ok(logs.into_response())
+}
+
 pub async fn get_user_logs(
     Path(user_params): Path<UserLogPathParams>,
     Query(range_params): Query<LogRangeParams>,
@@ -273,25 +296,77 @@ async fn get_user_logs_inner(
     Ok((cache, logs))
 }
 
+pub async fn get_user_logs_all(
+    Path(UserLogsPath { user_id_type, user }): Path<UserLogsPath>,
+    Query(logs_params): Query<LogsParams>,
+    app: State<App>,
+) -> Result<Response> {
+    let user_id = match user_id_type {
+        UserIdType::Name => app.get_user_id_by_name(&user).await?,
+        UserIdType::Id => user.clone(),
+    };
+
+    app.check_opted_out(&user_id, Some(&user_id))?; // Pass user id as both to ensure global check
+
+    let range = get_user_log_range(&app.db, &user_id).await?;
+    let range = range.ok_or(Error::NotFound)?;
+
+    let stream =
+        read_user_all_channels(&app.db, &user_id, logs_params, &app.flush_buffer, range).await?;
+
+    let logs = LogsResponse {
+        stream,
+        response_type: logs_params.response_type(),
+    };
+
+    let cache = if Utc::now() < range.1 {
+        no_cache_header()
+    } else {
+        cache_header(36000)
+    };
+
+    Ok((cache, logs).into_response())
+}
+
 pub async fn list_available_logs(
     Query(AvailableLogsParams { user, channel }): Query<AvailableLogsParams>,
     app: State<App>,
 ) -> Result<impl IntoApiResponse> {
-    let channel_id = match channel {
-        ChannelParam::ChannelId(id) => id,
-        ChannelParam::Channel(name) => app.get_user_id_by_name(&name).await?,
-    };
-
-    let available_logs = if let Some(user) = user {
-        let user_id = match user {
-            UserParam::UserId(id) => id,
-            UserParam::User(name) => app.get_user_id_by_name(&name).await?,
-        };
-        app.check_opted_out(&channel_id, Some(&user_id))?;
-        read_available_user_logs(&app.db, &channel_id, &user_id).await?
-    } else {
-        app.check_opted_out(&channel_id, None)?;
-        read_available_channel_logs(&app.db, &channel_id).await?
+    let available_logs = match (channel, user) {
+        (Some(channel), Some(user)) => {
+            let channel_id = match channel {
+                ChannelParam::ChannelId(id) => id,
+                ChannelParam::Channel(name) => app.get_user_id_by_name(&name).await?,
+            };
+            let user_id = match user {
+                UserParam::UserId(id) => id,
+                UserParam::User(name) => app.get_user_id_by_name(&name).await?,
+            };
+            app.check_opted_out(&channel_id, Some(&user_id))?;
+            read_available_user_logs(&app.db, &channel_id, &user_id).await?
+        }
+        (Some(channel), None) => {
+            let channel_id = match channel {
+                ChannelParam::ChannelId(id) => id,
+                ChannelParam::Channel(name) => app.get_user_id_by_name(&name).await?,
+            };
+            app.check_opted_out(&channel_id, None)?;
+            read_available_channel_logs(&app.db, &channel_id).await?
+        }
+        (None, Some(user)) => {
+            let user_id = match user {
+                UserParam::UserId(id) => id,
+                UserParam::User(name) => app.get_user_id_by_name(&name).await?,
+            };
+            app.check_opted_out(&user_id, Some(&user_id))?;
+            // Using same query helper since without a channel we can just query all their logs
+            db::read_available_user_logs_all_channels(&app.db, &user_id).await?
+        }
+        (None, None) => {
+            return Err(Error::InvalidParam(
+                "Must specify at least one of channel or user".to_owned(),
+            ))
+        }
     };
 
     if !available_logs.is_empty() {
@@ -299,6 +374,53 @@ pub async fn list_available_logs(
     } else {
         Err(Error::NotFound)
     }
+}
+
+pub async fn get_user_logs_by_date_all_channels(
+    app: State<App>,
+    Path(user_params): Path<UserLogsPath>,
+    Path(user_logs_date): Path<UserLogsDatePath>,
+    Query(logs_params): Query<LogsParams>,
+) -> Result<impl IntoApiResponse> {
+    let user_id = match user_params.user_id_type {
+        UserIdType::Name => app.get_user_id_by_name(&user_params.user).await?,
+        UserIdType::Id => user_params.user.clone(),
+    };
+
+    app.check_opted_out(&user_id, Some(&user_id))?;
+
+    let year = user_logs_date.year.parse()?;
+    let month = user_logs_date.month.parse()?;
+
+    let from = NaiveDate::from_ymd_opt(year, month, 1)
+        .ok_or_else(|| Error::InvalidParam("Invalid date".to_owned()))?
+        .and_time(NaiveTime::default())
+        .and_utc();
+    let to = from
+        .checked_add_months(Months::new(1))
+        .ok_or_else(|| Error::InvalidParam("Date out of range".to_owned()))?;
+
+    let stream = read_user_all_channels(
+        &app.db,
+        &user_id,
+        logs_params,
+        &app.flush_buffer,
+        (from, to),
+    )
+    .await?;
+
+    let logs = LogsResponse {
+        stream,
+        response_type: logs_params.response_type(),
+    };
+
+    let cache = if Utc::now() < to {
+        no_cache_header()
+    } else {
+        cache_header(36000)
+    };
+
+    Ok((cache, logs).into_response())
 }
 
 pub async fn random_channel_line(
@@ -361,6 +483,20 @@ pub async fn search_user_logs(
         logs_params,
     )
     .await?;
+
+    let logs = LogsResponse {
+        stream,
+        response_type: logs_params.response_type(),
+    };
+    Ok(logs)
+}
+
+pub async fn search_global_logs_route(
+    app: State<App>,
+    Query(search_params): Query<SearchParams>,
+    Query(logs_params): Query<LogsParams>,
+) -> Result<impl IntoApiResponse> {
+    let stream = search_global_logs(&app.db, &search_params.q, logs_params).await?;
 
     let logs = LogsResponse {
         stream,
