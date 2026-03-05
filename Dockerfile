@@ -1,7 +1,7 @@
 FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
 WORKDIR /src/web
 COPY web .
-RUN yarn install --ignore-optional
+RUN yarn install
 RUN yarn build
 
 FROM --platform=$BUILDPLATFORM rust:1.87-bookworm AS chef
