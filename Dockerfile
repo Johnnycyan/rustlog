@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:18-alpine as frontend
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
 WORKDIR /src/web
 COPY web .
 RUN yarn install --ignore-optional
