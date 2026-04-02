@@ -137,7 +137,7 @@ pub async fn read_available_channel_logs(
 ) -> Result<Vec<AvailableLogDate>> {
     let timestamps: Vec<i32> = db
         .query(
-            "SELECT toDateTime(toStartOfDay(timestamp, 'UTC'), 'UTC') AS date FROM message_structured WHERE channel_id = ? GROUP BY date ORDER BY date DESC",
+            "SELECT toDateTime(toStartOfMonth(timestamp, 'UTC'), 'UTC') AS date FROM message_structured WHERE channel_id = ? GROUP BY date ORDER BY date DESC",
         )
         .bind(channel_id)
         .fetch_all().await?;
@@ -150,7 +150,7 @@ pub async fn read_available_channel_logs(
             AvailableLogDate {
                 year: naive.year().to_string(),
                 month: naive.month().to_string(),
-                day: Some(naive.day().to_string()),
+                day: None,
             }
         })
         .collect();
