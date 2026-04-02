@@ -1,13 +1,13 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:25-alpine AS frontend
 WORKDIR /src/web
 COPY web .
 RUN yarn install
 RUN yarn build
 
-FROM --platform=$BUILDPLATFORM rust:1.87-bookworm AS chef
+FROM --platform=$BUILDPLATFORM rust:1.94-bookworm AS chef
 USER root
 ENV CARGO_PROFILE_RELEASE_LTO=true
-RUN cargo install cargo-chef --locked
+RUN cargo install cargo-chef
 WORKDIR /app
 
 FROM --platform=$BUILDPLATFORM chef AS planner
