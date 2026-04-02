@@ -7,7 +7,7 @@ RUN yarn build
 FROM --platform=$BUILDPLATFORM rust:1.87-bookworm AS chef
 USER root
 ENV CARGO_PROFILE_RELEASE_LTO=true
-RUN cargo install cargo-chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 FROM --platform=$BUILDPLATFORM chef AS planner
