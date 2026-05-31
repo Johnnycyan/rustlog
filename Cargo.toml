@@ -11,6 +11,7 @@ aide = { version = "0.15.0", features = [
     "scalar",
 ] }
 anyhow = "1.0.75"
+async-trait = "0.1"
 axum = { version = "0.8.4", features = ["tokio"] }
 chrono = { version = "0.4.27", features = ["serde"] }
 clap = { version = "4.4.1", features = ["derive"] }
@@ -53,6 +54,8 @@ twitch-irc = { version = "5.0.1", default-features = false, features = [
     "metrics-collection",
     "transport-tcp-rustls-webpki-roots",
 ] }
+tokio-rustls = "0.24"
+webpki-roots = "0.25"
 twitch_api = { version = "0.7.0", features = [
     "client",
     "helix",

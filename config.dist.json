@@ -8,5 +8,7 @@
   "clientID": "id",
   "clientSecret": "secret",
   "admins": [],
-  "optOut": {}
+  "optOut": {},
+  "ircServer": "irc.chat.twitch.tv",
+  "ircPort": 6697
 }

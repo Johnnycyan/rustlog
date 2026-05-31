@@ -25,6 +25,10 @@ pub struct Config {
     pub opt_out: DashMap<String, bool>,
     #[serde(rename = "adminAPIKey")]
     pub admin_api_key: Option<String>,
+    #[serde(default)]
+    pub irc_server: Option<String>,
+    #[serde(default)]
+    pub irc_port: Option<u16>,
     #[serde(skip)]
     config_path: Option<std::path::PathBuf>,
 }

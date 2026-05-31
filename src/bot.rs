@@ -5,11 +5,13 @@ use crate::{
     ShutdownRx,
 };
 use anyhow::{anyhow, Context};
+use async_trait::async_trait;
 use chrono::Utc;
 use lazy_static::lazy_static;
 use prometheus::{register_int_counter_vec, IntCounterVec};
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 use tokio::{
+    net::TcpStream,
     sync::mpsc::{Receiver, Sender},
     time::sleep,
 };
@@ -17,13 +19,67 @@ use tracing::{debug, error, info, log::warn, trace};
 use twitch_irc::{
     login::LoginCredentials,
     message::{AsRawIRC, IRCMessage, ServerMessage},
-    ClientConfig, SecureTCPTransport, TwitchIRCClient,
+    transport::tcp::{MakeConnection, TCPTransport, TCPTransportConnectError},
+    ClientConfig, TwitchIRCClient,
 };
 
 const CHANNEL_REJOIN_INTERVAL_SECONDS: u64 = 3600;
 const CHANENLS_REFETCH_RETRY_INTERVAL_SECONDS: u64 = 5;
 
-type TwitchClient<C> = TwitchIRCClient<SecureTCPTransport, C>;
+const TWITCH_IRC_SERVER: &str = "irc.chat.twitch.tv";
+const TWITCH_IRC_PORT: u16 = 6697;
+
+/// Stores the (server, port) used for every IRC connection.
+/// Initialised once at bot startup from the application config.
+static IRC_CONNECTION_CONFIG: OnceLock<(String, u16)> = OnceLock::new();
+
+/// Custom [`MakeConnection`] that connects to the server/port stored in
+/// [`IRC_CONNECTION_CONFIG`], falling back to the standard Twitch IRC server.
+struct CustomTLS;
+
+#[async_trait]
+impl MakeConnection for CustomTLS {
+    type Socket = tokio_rustls::client::TlsStream<TcpStream>;
+
+    async fn new_socket() -> Result<Self::Socket, TCPTransportConnectError> {
+        use std::sync::Arc;
+        use tokio_rustls::rustls::{
+            ClientConfig as RustlsClientConfig, OwnedTrustAnchor, RootCertStore, ServerName,
+        };
+
+        let (server, port) = IRC_CONNECTION_CONFIG
+            .get()
+            .map(|(s, p)| (s.as_str(), *p))
+            .unwrap_or((TWITCH_IRC_SERVER, TWITCH_IRC_PORT));
+
+        let mut root_store = RootCertStore::empty();
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+            OwnedTrustAnchor::from_subject_spki_name_constraints(
+                ta.subject,
+                ta.spki,
+                ta.name_constraints,
+            )
+        }));
+
+        let config = RustlsClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let domain = ServerName::try_from(server).map_err(|_| {
+            TCPTransportConnectError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid IRC server hostname: {server}"),
+            ))
+        })?;
+
+        let stream = TcpStream::connect((server, port)).await?;
+        Ok(connector.connect(domain, stream).await?)
+    }
+}
+
+type TwitchClient<C> = TwitchIRCClient<TCPTransport<CustomTLS>, C>;
 
 #[derive(Debug)]
 pub enum BotMessage {
@@ -70,8 +126,18 @@ impl Bot {
         mut shutdown_rx: ShutdownRx,
         mut command_rx: Receiver<BotMessage>,
     ) {
+        let server = self
+            .app
+            .config
+            .irc_server
+            .clone()
+            .unwrap_or_else(|| TWITCH_IRC_SERVER.to_string());
+        let port = self.app.config.irc_port.unwrap_or(TWITCH_IRC_PORT);
+        IRC_CONNECTION_CONFIG.set((server, port)).ok();
+
         let client_config = ClientConfig::new_simple(login_credentials);
-        let (mut receiver, client) = TwitchIRCClient::<SecureTCPTransport, C>::new(client_config);
+        let (mut receiver, client) =
+            TwitchIRCClient::<TCPTransport<CustomTLS>, C>::new(client_config);
 
         let app = self.app.clone();
         let join_client = client.clone();
