@@ -55,9 +55,9 @@ impl MakeConnection for CustomTLS {
         let mut root_store = RootCertStore::empty();
         root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
             OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
+                ta.subject.as_ref(),
+                ta.subject_public_key_info.as_ref(),
+                ta.name_constraints.as_ref().map(|nc| nc.as_ref()),
             )
         }));
 
