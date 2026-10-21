@@ -52,10 +52,10 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 twitch-irc = { version = "5.0.1", default-features = false, features = [
     "metrics-collection",
-    "transport-tcp-rustls-webpki-roots",
+    "transport-tcp",
 ] }
 tokio-rustls = "0.24"
-webpki-roots = "0.25"
+webpki-roots = "1.0.10"
 twitch_api = { version = "0.7.0", features = [
     "client",
     "helix",
